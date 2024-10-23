@@ -7,6 +7,7 @@ use rand::
 use serde::{Deserialize, Serialize};
 use serde_json::{from_value, Map, Value};
 use std::collections::HashSet;
+use rand_mt::{Mt19937GenRand64};
 
 #[cfg(feature = "cuda")]
 use crate::CudaKernel;
@@ -18,10 +19,10 @@ use std::{collections::HashMap, sync::Arc};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Difficulty 
 {
-    pub num_vertices:                               usize,
-    pub num_nodes:                                  usize,
-    pub num_edges:                                  usize,
-    pub num_blocks:                                 usize,
+    pub num_vertices:                                   usize,
+    pub num_nodes:                                      usize,
+    pub num_edges:                                      usize,
+    pub num_blocks:                                     usize,
 }
 
 impl crate::DifficultyTrait<4> for Difficulty 
@@ -30,10 +31,10 @@ impl crate::DifficultyTrait<4> for Difficulty
     {
         return Self 
         {
-            num_vertices:                           arr[0] as usize,
-            num_nodes:                              arr[1] as usize,
-            num_edges:                              arr[2] as usize,
-            num_blocks:                             arr[3] as usize
+            num_vertices:                               arr[0] as usize,
+            num_nodes:                                  arr[1] as usize,
+            num_edges:                                  arr[2] as usize,
+            num_blocks:                                 arr[3] as usize
         };
     }
 
@@ -46,7 +47,7 @@ impl crate::DifficultyTrait<4> for Difficulty
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Solution 
 {
-    pub items:                                      Vec<usize>,
+    pub items:                                          Vec<usize>,
 }
 
 impl crate::SolutionTrait for Solution 
@@ -66,13 +67,13 @@ impl TryFrom<Map<String, Value>> for Solution
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Challenge 
 {
-    pub seed:                                       [u8; 32],
-    pub difficulty:                                 Difficulty,
-    pub vertices:                                   Vec<u64>,
-    pub hyperedge_indices:                          Vec<u64>,
-    pub hyperedges:                                 Vec<Vec<u64>>,
-    pub node_weights:                               Vec<f32>,
-    pub edge_weights:                               Vec<f32>,
+    pub seed:                                           [u8; 32],
+    pub difficulty:                                     Difficulty,
+    pub vertices:                                       Vec<u64>,
+    pub hyperedge_indices:                              Vec<u64>,
+    pub hyperedges:                                     Vec<Vec<u64>>,
+    pub node_weights:                                   Vec<f32>,
+    pub edge_weights:                                   Vec<f32>,
 }
 
 // TIG dev bounty available for a GPU optimisation for instance generation!
@@ -84,20 +85,22 @@ fn get_init_values(
     seed:                               [u8; 32]
 )                                                   -> (Vec<u64>, Vec<u64>, Vec<Vec<u64>>)
 {
-    let mut rng                                     = SmallRng::from_seed(StdRng::from_seed(seed).gen());
+    let mut rng                                         = SmallRng::from_seed(StdRng::from_seed(seed).gen());
+    let mut mt                                          = Mt19937GenRand64::new(1234);
+    panic!("{:?}", mt.next_u64());
 
-    let mut hyperedge_indices                       = Vec::with_capacity(((difficulty.num_nodes * difficulty.num_edges)+1) / difficulty.num_edges + 1);
+    let mut hyperedge_indices                           = Vec::with_capacity(((difficulty.num_nodes * difficulty.num_edges)+1) / difficulty.num_edges + 1);
     for i in (0..(difficulty.num_nodes * difficulty.num_edges)+1).step_by(difficulty.num_edges)
     {
         hyperedge_indices.push(i as u64);
     }
 
-    let vertices                                    : Vec<u64> = (0..difficulty.num_vertices as u64).collect();
+    let vertices                                        : Vec<u64> = (0..difficulty.num_vertices as u64).collect();
 
-    let mut hyperedges                              = Vec::with_capacity(difficulty.num_nodes);
+    let mut hyperedges                                  = Vec::with_capacity(difficulty.num_nodes);
     for i in 0..difficulty.num_nodes
     {
-        let mut vec                                 = Vec::with_capacity(difficulty.num_edges);
+        let mut vec                                     = Vec::with_capacity(difficulty.num_edges);
         for j in 0..difficulty.num_edges
         {
             vec.push(
@@ -130,17 +133,19 @@ impl crate::ChallengeTrait<Solution, Difficulty, 4> for Challenge
         difficulty:                     &Difficulty
     )                                               -> Result<Challenge> 
     {
-        let (vertices, hyperedge_indices, hyperedges) = get_init_values(difficulty, seed);
+        let (vertices, hyperedge_indices, hyperedges)   = get_init_values(difficulty, seed);
+
+        let result                                      = solve_greedy_bipartition(&vertices, &hyperedges, Some(difficulty.num_blocks));
 
         return Ok(Challenge
         {
-            seed:                                   seed,
-            difficulty:                             difficulty.clone(),
-            vertices:                               vertices,
-            hyperedge_indices:                      hyperedge_indices,
-            hyperedges:                             hyperedges,
-            node_weights:                           vec![1.0f32; difficulty.num_vertices as usize],
-            edge_weights:                           vec![1.0f32; difficulty.num_edges as usize],
+            seed:                                       seed,
+            difficulty:                                 difficulty.clone(),
+            vertices:                                   vertices,
+            hyperedge_indices:                          hyperedge_indices,
+            hyperedges:                                 hyperedges,
+            node_weights:                               vec![1.0f32; difficulty.num_vertices as usize],
+            edge_weights:                               vec![1.0f32; difficulty.num_edges as usize],
         });
     }
 
@@ -153,6 +158,7 @@ impl crate::ChallengeTrait<Solution, Difficulty, 4> for Challenge
 fn recursive_bipartition(
     vertices_subset:                    &Vec<u64>, 
     partitions:                         &mut Vec<i32>,
+    vertex_to_hyperedges:               &Vec<Vec<usize>>,
     current_id:                         i32, 
     current_depth:                      u32, 
     partitions_per_subset:              usize
@@ -162,32 +168,44 @@ fn recursive_bipartition(
     {
         for i in 0..vertices_subset.len()
         {
-            partitions[i]               = current_id;
+            partitions[i]                               = current_id;
         }
 
         return;
     }
 
-    let half_partitions                 = partitions_per_subset / 2;
-    let left_partitions                 = half_partitions;
-    let right_partitions                = partitions_per_subset - half_partitions;
+    let half_partitions                                 = partitions_per_subset / 2;
+    let left_partitions                                 = half_partitions;
+    let right_partitions                                = partitions_per_subset - half_partitions;
 
-    let target_left                     = vertices_subset.len() * left_partitions / partitions_per_subset;
-    let target_right                    = vertices_subset.len() - target_left;
+    let target_left                                     = vertices_subset.len() * left_partitions / partitions_per_subset;
+    let target_right                                    = vertices_subset.len() - target_left;
 
-    let (left, right)                   = bipartition(vertices_subset, target_left, target_right);
+    let (left, right)                                   = bipartition(vertices_subset, vertex_to_hyperedges, target_left, target_right);
 
-    recursive_bipartition(&left, partitions, current_id * 2, current_depth - 1, left_partitions);
-    recursive_bipartition(&right, partitions, current_id * 2 + 1, current_depth - 1, right_partitions);
+    recursive_bipartition(&left, partitions, vertex_to_hyperedges, current_id * 2, current_depth - 1, left_partitions);
+    recursive_bipartition(&right, partitions, vertex_to_hyperedges, current_id * 2 + 1, current_depth - 1, right_partitions);
 }
 
 fn bipartition(
-    vertices_subset:                    &Vec<u64>, 
+    vertices_subset:                    &Vec<u64>,
+    vertex_to_hyperedges:               &Vec<Vec<usize>>,
     target_left:                        usize, 
     target_right:                       usize
 )                                                   -> (Vec<u64>, Vec<u64>)
 {
     assert!(target_left + target_right == vertices_subset.len());
+
+    let mut degrees                                     = Vec::<usize>::with_capacity(vertices_subset.len());
+    for v in vertices_subset
+    {
+        degrees.push(vertex_to_hyperedges[*v as usize].len());
+    }
+
+    let mut sorted_vertices                             = vertices_subset.clone();
+    sorted_vertices.sort_by_key(|&i| degrees[i as usize]);
+
+    panic!("{:?}", sorted_vertices);
 
     return (Vec::new(), Vec::new());
 }
@@ -205,12 +223,12 @@ fn solve_greedy_bipartition(
     num_partitions:                     Option<usize>
 )                                                   -> Vec<i32>
 {
-    let depth                                       = num_partitions.unwrap_or(16).ilog2();
-    let M                                           = solve_shape(hyperedges).0;
+    let depth                                           = num_partitions.unwrap_or(16).ilog2();
+    let M                                               = solve_shape(hyperedges).0;
 
     // Preprocessing: Build mappings
     // vertex_to_hyperedges[v] will contain the hyperedge indices that include vertex v
-    let mut vertex_to_hyperedges                    : Vec<Vec<usize>> = vec![Vec::with_capacity(hyperedges.len()); vertices.len()];
+    let mut vertex_to_hyperedges                        : Vec<Vec<usize>> = vec![Vec::with_capacity(hyperedges.len()); vertices.len()];
     for i in 0..hyperedges.len()
     {
         for j in hyperedges[i].iter()
@@ -219,8 +237,8 @@ fn solve_greedy_bipartition(
         }
     }
 
-    let mut partitions                              = vec![-1 as i32; vertices.len()];
-    recursive_bipartition(vertices, &mut partitions, 0, depth, num_partitions.unwrap_or(16));
+    let mut partitions                                  = vec![-1 as i32; vertices.len()];
+    recursive_bipartition(vertices, &mut partitions, &vertex_to_hyperedges, 0, depth, num_partitions.unwrap_or(16));
 
     return partitions;
 }
