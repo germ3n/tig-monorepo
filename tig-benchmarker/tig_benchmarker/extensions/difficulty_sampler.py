@@ -85,6 +85,65 @@ def calc_pareto_frontier(points: List[Point]) -> Frontier:
         next_point_index = np.sum(nondominated_point_mask[:next_point_index]) + 1
     return [points_[idx] for idx in frontier_idxs]
 
+def o_calc_pareto_frontier(points: List[Point]) -> Frontier:
+    """
+    Optimized Pareto frontier calculation using 2D sorting approach
+    """
+    if not points:
+        return []
+    
+    # Sort indices by first dimension
+    indices                 = list(range(len(points)))
+    indices.sort(key=lambda i: points[i][0])
+    
+    on_front                = [True] * len(points)
+    stack                   = []
+    
+    for curr_idx in indices:
+        # Remove points from stack that are dominated by current point
+        while stack and points[stack[-1]][1] > points[curr_idx][1]:
+            stack.pop()
+            
+        # If stack not empty, current point is dominated
+        if stack and points[stack[-1]][1] <= points[curr_idx][1]:
+            on_front[curr_idx] = False
+            
+        # Add current point to stack
+        stack.append(curr_idx)
+        
+    return [points[i] for i in range(len(points)) if on_front[i]]
+
+def o_calc_all_frontiers(points: List[Point]) -> List[Frontier]:
+    """
+    Calculates a list of Pareto frontiers from a list of points
+    """
+    if not points:
+        return []
+    
+    frontiers               = []
+    remaining_points        = None
+    
+    while True:
+        points_             = remaining_points if remaining_points is not None else points
+        on_front            = o_calc_pareto_frontier(points_)
+        
+        # Extract frontier points
+        frontier            = [p for p in points_ if p in on_front]
+        frontiers.append(frontier)
+        
+        if only_one:
+            break
+            
+        # Remove frontier points from remaining points
+        remaining_points    = [p for p in points_ if p not in on_front]
+        if not remaining_points:
+            break
+            
+    return frontiers
+
+print(o_calc_all_frontiers({{0, 0}, {1, 0}, {0, 2}}))
+
+
 def calc_all_frontiers(points: List[Point]) -> List[Frontier]:
     """
     Calculates a list of Pareto frontiers from a list of points
